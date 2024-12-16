@@ -2,15 +2,18 @@
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
-using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography;
+using System.Xml;
 
 namespace ClientDownloader
 {
     class Program
     {
+        static readonly HttpClient webClient = new();
         static void Main(string[] args)
         {
+
             Dictionary<string, string> files = new Dictionary<string, string>()
             {
                 { "E1FC69A72E4E23A96DBD535B372974A8", "BackgroundDownloader.exe" },
@@ -37,43 +40,40 @@ namespace ClientDownloader
 
             string server = "http://dist.blizzard.com.edgesuite.net/repair/wow/";
 
-            using (WebClient webClient = new WebClient())
+            foreach (var file in files)
             {
-                foreach (var file in files)
+                string md5Hash = "";
+                // check if file is valid
+                if (File.Exists(file.Value))
                 {
-                    string md5Hash = "";
-                    // check if file is valid
-                    if (File.Exists(file.Value))
+                    using (var md5 = MD5.Create())
                     {
-                        using (var md5 = MD5.Create())
+                        using (var stream = File.OpenRead(file.Value))
                         {
-                            using (var stream = File.OpenRead(file.Value))
-                            {
-                                md5Hash = BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToUpper();
-                            }
-                        }
-
-                        if (file.Key.Equals(md5Hash))
-                        {
-                            Console.WriteLine($"{file.Value} already exists. Skip.");
-                            Console.WriteLine();
-                            continue;
-                        }
-                        else
-                        {
-                            Console.WriteLine($"Existing {file.Value} is corrupted!");
-                            Console.WriteLine($"Renamed corrupted file {file.Value} to {Path.GetFileNameWithoutExtension(file.Value)}_BACKUP{Path.GetExtension(file.Value)}");
-                            Console.WriteLine();
-                            File.Move(file.Value, Path.GetFileNameWithoutExtension(file.Value) + "_BACKUP" + Path.GetExtension(file.Value));
+                            md5Hash = BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToUpper();
                         }
                     }
 
-                    Console.WriteLine($"Downloading: {file.Value} ...");
-                    string url = server + file.Key[0] + "/" + file.Key[1] + "/" + file.Key;
-                    webClient.DownloadFile(url, file.Value);
-                    Console.SetCursorPosition(0, Console.CursorTop - 1);
-                    ClearCurrentConsoleLine();
+                    if (file.Key.Equals(md5Hash))
+                    {
+                        Console.WriteLine($"{file.Value} already exists. Skip.");
+                        Console.WriteLine();
+                        continue;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Existing {file.Value} is corrupted!");
+                        Console.WriteLine($"Renamed corrupted file {file.Value} to {Path.GetFileNameWithoutExtension(file.Value)}_BACKUP{Path.GetExtension(file.Value)}");
+                        Console.WriteLine();
+                        File.Move(file.Value, Path.GetFileNameWithoutExtension(file.Value) + "_BACKUP" + Path.GetExtension(file.Value));
+                    }
                 }
+
+                Console.WriteLine($"Downloading: {file.Value} ...");
+                string url = server + file.Key[0] + "/" + file.Key[1] + "/" + file.Key;
+                File.WriteAllBytes(file.Value, webClient.GetByteArrayAsync(url).Result);
+                Console.SetCursorPosition(0, Console.CursorTop - 1);
+                ClearCurrentConsoleLine();
             }
 
             List<string> x64FilesToDownload = new List<string>();
@@ -84,12 +84,9 @@ namespace ClientDownloader
                 // check if file is valid
                 if (File.Exists(x64file.Value))
                 {
-                    using (var md5 = MD5.Create())
+                    using (var stream = File.OpenRead(x64file.Value))
                     {
-                        using (var stream = File.OpenRead(x64file.Value))
-                        {
-                            md5Hash = BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToUpper();
-                        }
+                        md5Hash = Convert.ToHexString(MD5.HashData(stream));
                     }
 
                     if (x64file.Key.Equals(md5Hash))
@@ -113,13 +110,13 @@ namespace ClientDownloader
             if (x64FilesToDownload.Count > 0)
             {
                 Console.WriteLine($"Downloading: WoWLive-64-Win-15595.zip ...");
-                using (MemoryStream x64Zip = new MemoryStream(new WebClient().DownloadData("http://eu.media.battle.net.edgesuite.net/downloads/wow-installers/live/WoWLive-64-Win-15595.zip")))
+                using (MemoryStream x64Zip = new MemoryStream(webClient.GetByteArrayAsync("http://eu.media.battle.net.edgesuite.net/downloads/wow-installers/live/WoWLive-64-Win-15595.zip").Result))
                 {
                     using (ZipArchive archive = new ZipArchive(x64Zip, ZipArchiveMode.Read))
                     {
                         foreach (ZipArchiveEntry entry in archive.Entries)
                         {
-                            
+
                             if (x64FilesToDownload.Contains(entry.FullName))
                             {
                                 Console.WriteLine($"Extracting: {entry.FullName} ...");
@@ -134,12 +131,9 @@ namespace ClientDownloader
             {
                 string md5Hash = "";
 
-                using (var md5 = MD5.Create())
+                using (var stream = File.OpenRead("WoW.mfil"))
                 {
-                    using (var stream = File.OpenRead("WoW.mfil"))
-                    {
-                        md5Hash = BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToUpper();
-                    }
+                    md5Hash = Convert.ToHexString(MD5.HashData(stream)).Replace("-", "");
                 }
 
                 if (mfilHash.Equals(md5Hash))

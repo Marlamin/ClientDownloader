@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Xml;
@@ -11,24 +10,198 @@ namespace ClientDownloader
     class Program
     {
         static readonly HttpClient webClient = new();
-        static void Main(string[] args)
-        {
 
-            Dictionary<string, string> files = new Dictionary<string, string>()
+        static readonly List<string> CDNs = new()
             {
-                { "E1FC69A72E4E23A96DBD535B372974A8", "BackgroundDownloader.exe" },
-                { "24433A51A32335A39D2AF8CB55C467D3", "Battle.net.dll" },
-                { "82EF43D5F8D1B1C87C3505ECD241FFF6", "Blizzard Updater.exe" },
-                { "4003E34416EBD25E4C115D49DC15E1A7", "dbghelp.dll" },
-                { "57E72CAE12091DAFA29A8E4DB8B4F1D1", "divxdecoder.dll" },
-                { "C7C7121E1DD819088403F514FEBD06BA", "Launcher.exe" },
-                { "D34B3DA03C59F38A510EAA8CCC151EC7", "Microsoft.VC80.CRT.manifest" },
-                { "1169436EE42F860C7DB37A4692B38F0E", "msvcr80.dll" },
-                { "DE5A2E274F2D3F2B89A2E6EC9CD8FD2A", "Wow.exe" },
-                { "78766BBBFC6F9E5DA5D930CB11F0A1E1", "WowError.exe" },
-                { "E198F00FE056B24ED58B36E1C6A048F4", "Repair.exe" }
+                "dist.blizzard.com",
+                "dist.blizzard.com.edgesuite.net",
+                "blzddist1-a.akamaihd.net",
+                "blzddist2-a.akamaihd.net",
+                "blzddist3-a.akamaihd.net",
+                "level3.blizzard.com",
             };
 
+        private static bool TryDownloadFile(string path, string outFile)
+        {
+            foreach (var cdn in CDNs)
+            {
+                var catalogUrl = $"http://{cdn}/repair/" + path;
+                try
+                {
+                    File.WriteAllBytes(outFile, webClient.GetByteArrayAsync(catalogUrl).Result);
+                    return true;
+                }
+                catch (Exception e)
+                {
+                }
+            }
+
+            return false;
+        }
+
+        static void Main(string[] args)
+        {
+            var targetDirectory = "E:\\WotLKForUpgrade\\FromRepair";
+            var cacheDir = "\\\\martin-nas\\Raid2024\\WoW\\Old CDN\\repair\\";
+            var tryCDNs = false;
+
+            var repairConfig = "http://dist.blizzard.com.edgesuite.net/repair/wow/repairconfig_eu_B533860ECA708FA85339E7E7885C91A8.xml";
+
+            var xmlDocument = new XmlDocument();
+            xmlDocument.Load(repairConfig);
+
+            var versions = xmlDocument.GetElementsByTagName("version");
+
+            foreach (XmlElement version in versions)
+            {
+                var catalogHash = version.GetAttribute("catalog");
+                var gameVersion = version.GetAttribute("gameversion");
+                var subPath = version.GetAttribute("subpath");
+
+                Console.WriteLine($"Process build: {gameVersion} ...");
+
+                var cachePath = Path.Combine(cacheDir, subPath, catalogHash[0].ToString(), catalogHash[1].ToString(), catalogHash);
+
+                if (!File.Exists(cachePath))
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"Repair catalog {catalogHash} for {gameVersion} not found in cache, trying CDN..");
+                    Console.ResetColor();
+
+                    var success = false;
+                    var path = $"{subPath}/{catalogHash[0]}/{catalogHash[1]}/{catalogHash}";
+
+                    if (tryCDNs)
+                        success = TryDownloadFile(path, cachePath);
+
+                    if (!success)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"Failed to locate repair catalog {gameVersion} from all CDNs. Skipping build.");
+                        Console.ResetColor();
+                        continue;
+                    }
+                }
+
+                var buildOutputDirectory = Path.Combine(targetDirectory, gameVersion);
+                if (!Directory.Exists(buildOutputDirectory))
+                    Directory.CreateDirectory(buildOutputDirectory);
+
+                var repairCatalog = new RepairCatalog(cachePath);
+                foreach (var os in repairCatalog.Entries)
+                {
+                    foreach (var entry in os.Value)
+                    {
+                        var repairListPath = Path.Combine(cacheDir, subPath, entry.Value[0].ToString(), entry.Value[1].ToString(), entry.Value);
+
+                        if (!File.Exists(repairListPath))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"Repair list {entry.Value} for {gameVersion} {os.Key} {entry.Value} not found in cache, trying CDN..");
+                            Console.ResetColor();
+
+                            var success = false;
+                            var path = $"{subPath}/{entry.Value[0]}/{entry.Value[1]}/{entry.Value}";
+
+                            if (tryCDNs)
+                                success = TryDownloadFile(path, repairListPath);
+
+                            if (!success)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"Failed to locate repair list for {gameVersion} {os.Key} {entry.Value} from all CDNs. Skipping build.");
+                                Console.ResetColor();
+                                continue;
+                            }
+                        }
+
+                        var repairList = new RepairList(repairListPath);
+                        foreach (var fileEntry in repairList.Entries)
+                        {
+                            var fileName = fileEntry.Key;
+                            var fileHash = fileEntry.Value.fileHash;
+                            var fileFlags = fileEntry.Value.flags;
+
+                            var repairedFilePath = Path.Combine(cacheDir, subPath, fileHash[0].ToString(), fileHash[1].ToString(), fileHash);
+
+                            if (!File.Exists(repairedFilePath))
+                            {
+                                Console.ForegroundColor = ConsoleColor.Yellow;
+                                Console.WriteLine($"Repaired file {repairedFilePath} for {gameVersion} {os.Key} {entry.Value} not found in cache, trying CDN..");
+                                Console.ResetColor();
+
+                                var success = false;
+                                var path = $"{subPath}/{fileHash[0]}/{fileHash[1]}/{fileHash}";
+
+                                if (tryCDNs)
+                                    success = TryDownloadFile(path, repairedFilePath);
+
+                                if (!success)
+                                {
+                                    Console.ForegroundColor = ConsoleColor.Red;
+                                    Console.WriteLine($"Failed to locate repaired file {fileName} ({fileEntry.Value}) for {gameVersion} {os.Key} {entry.Value} from all CDNs. Skipping build.");
+                                    Console.ResetColor();
+                                    continue;
+                                }
+                            }
+
+                            if (os.Key == "Mac")
+                                continue;
+
+                            if (entry.Key != "common" && entry.Key != "enGB" && entry.Key != "enUS")
+                                continue;
+
+                            // TODO: Support MPQ repacking
+                            if (fileFlags.HasFlag(RepairList.FileFlags.RepackMPQ))
+                                continue;
+
+                            var targetPath = Path.Combine(buildOutputDirectory, fileName);
+                            if (File.Exists(targetPath))
+                                continue;
+
+                            var sourceFileMD5 = Convert.ToHexString(MD5.HashData(File.OpenRead(repairedFilePath)));
+                            if (sourceFileMD5 != fileHash)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine($"Repaired file {fileName} ({fileHash}) for {gameVersion} {os.Key} {entry.Value} is corrupted. Skipping.");
+                                Console.ResetColor();
+                                continue;
+                            }
+
+                            var targetDir = Path.GetDirectoryName(targetPath);
+                            if (!Directory.Exists(targetDir))
+                                Directory.CreateDirectory(targetDir);
+
+                            File.Copy(repairedFilePath, targetPath, true);
+                        }
+                    }
+                }
+
+                // Create MFIL
+                var mfilPath = Path.Combine(buildOutputDirectory, "WoW.mfil");
+                if (!File.Exists(mfilPath))
+                {
+                    if (MFILMap.Entries.TryGetValue(gameVersion, out var mfilInfo))
+                    {
+                        Console.WriteLine("Creating new WoW.mfil...");
+                        using (StreamWriter sw = File.CreateText(mfilPath))
+                        {
+                            sw.WriteLine("version=2");
+                            sw.WriteLine("server=akamai");
+                            sw.WriteLine("	location=" + mfilInfo.folder);
+                            sw.WriteLine("manifest_partial=" + mfilInfo.file);
+                        }
+                        File.SetAttributes(mfilPath, FileAttributes.ReadOnly);
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"Failed to locate MFIL info for {gameVersion}. Skipping MFIL creation.");
+                        Console.ResetColor();
+                    }
+                }
+            }
+                /*
             Dictionary<string, string> x64files = new Dictionary<string, string>()
             {
                 { "5ACD2205377352083D2D98B89F48B602", "Wow-64.exe" },
@@ -38,43 +211,6 @@ namespace ClientDownloader
 
             string mfilHash = "F8E7D7BA6CDE053B1A9F85BD36980A72";
 
-            string server = "http://dist.blizzard.com.edgesuite.net/repair/wow/";
-
-            foreach (var file in files)
-            {
-                string md5Hash = "";
-                // check if file is valid
-                if (File.Exists(file.Value))
-                {
-                    using (var md5 = MD5.Create())
-                    {
-                        using (var stream = File.OpenRead(file.Value))
-                        {
-                            md5Hash = BitConverter.ToString(md5.ComputeHash(stream)).Replace("-", "").ToUpper();
-                        }
-                    }
-
-                    if (file.Key.Equals(md5Hash))
-                    {
-                        Console.WriteLine($"{file.Value} already exists. Skip.");
-                        Console.WriteLine();
-                        continue;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Existing {file.Value} is corrupted!");
-                        Console.WriteLine($"Renamed corrupted file {file.Value} to {Path.GetFileNameWithoutExtension(file.Value)}_BACKUP{Path.GetExtension(file.Value)}");
-                        Console.WriteLine();
-                        File.Move(file.Value, Path.GetFileNameWithoutExtension(file.Value) + "_BACKUP" + Path.GetExtension(file.Value));
-                    }
-                }
-
-                Console.WriteLine($"Downloading: {file.Value} ...");
-                string url = server + file.Key[0] + "/" + file.Key[1] + "/" + file.Key;
-                File.WriteAllBytes(file.Value, webClient.GetByteArrayAsync(url).Result);
-                Console.SetCursorPosition(0, Console.CursorTop - 1);
-                ClearCurrentConsoleLine();
-            }
 
             List<string> x64FilesToDownload = new List<string>();
 
@@ -126,63 +262,7 @@ namespace ClientDownloader
                     }
                 }
             }
-
-            if (File.Exists("WoW.mfil"))
-            {
-                string md5Hash = "";
-
-                using (var stream = File.OpenRead("WoW.mfil"))
-                {
-                    md5Hash = Convert.ToHexString(MD5.HashData(stream)).Replace("-", "");
-                }
-
-                if (mfilHash.Equals(md5Hash))
-                {
-                    Console.WriteLine($"WoW.mfil already exists. Skip.");
-                    Console.WriteLine();
-                }
-                else
-                {
-                    File.SetAttributes("WoW.mfil", FileAttributes.Normal);
-                    Console.WriteLine($"Existing WoW.mfil is corrupted!");
-                    Console.WriteLine($"Renamed corrupted file WoW.mfil to {Path.GetFileNameWithoutExtension("WoW.mfil")}_BACKUP{Path.GetExtension("WoW.mfil")}");
-                    Console.WriteLine();
-                    File.Move("WoW.mfil", Path.GetFileNameWithoutExtension("WoW.mfil") + "_BACKUP" + Path.GetExtension("WoW.mfil"));
-
-                    Console.WriteLine("Creating new WoW.mfil...");
-                    using (StreamWriter sw = File.CreateText("WoW.mfil"))
-                    {
-                        sw.WriteLine("version=2");
-                        sw.WriteLine("server=akamai");
-                        sw.WriteLine("	location=http://dist.blizzard.com.edgesuite.net/wow-pod-retail/EU/15050.direct/");
-                        sw.WriteLine("manifest_partial=wow-15595-0C3502F50D17376754B9E9CB0109F4C5.mfil");
-                    }
-                    File.SetAttributes("WoW.mfil", FileAttributes.ReadOnly);
-                }
-            }
-            else
-            {
-                Console.WriteLine("Creating WoW.mfil...");
-                using (StreamWriter sw = File.CreateText("WoW.mfil"))
-                {
-                    sw.WriteLine("version=2");
-                    sw.WriteLine("server=akamai");
-                    sw.WriteLine("	location=http://dist.blizzard.com.edgesuite.net/wow-pod-retail/EU/15050.direct/");
-                    sw.WriteLine("manifest_partial=wow-15595-0C3502F50D17376754B9E9CB0109F4C5.mfil");
-                }
-                File.SetAttributes("WoW.mfil", FileAttributes.ReadOnly);
-            }
-
-            Console.WriteLine("Sucessfully downloaded client data!");
-            Console.WriteLine("Press Enter to exit...");
-            Console.ReadLine();
-        }
-        public static void ClearCurrentConsoleLine()
-        {
-            int currentLineCursor = Console.CursorTop;
-            Console.SetCursorPosition(0, Console.CursorTop);
-            Console.Write(new string(' ', Console.WindowWidth));
-            Console.SetCursorPosition(0, currentLineCursor);
+            */
         }
     }
 }
